@@ -13,9 +13,6 @@ import {
   parseTaskId
 } from "./parsing.js";
 
-const DEFAULT_REVISION_STATUSES = ["needs-review", "needs-revision", "accepted"];
-const DEFAULT_LIMIT = 100;
-const MAX_LIMIT = 1000;
 const DEFAULT_MAX_DRAFT_COMMENTS = 50;
 
 interface DraftReviewCodeLocation {
@@ -30,91 +27,6 @@ interface DraftReviewFinding {
   title: string;
   body: string;
   code_location: DraftReviewCodeLocation;
-}
-
-export async function phab_whoami(): Promise<{ username: string; realName: string; phid: string }> {
-  const response = await callConduit("user.whoami", {});
-
-  const username = asString(response.userName) ?? asString(response.username);
-  const realName = asString(response.realName);
-  const phid = asString(response.phid);
-
-  if (!username || !realName || !phid) {
-    throw new InputValidationError("user.whoami response missing username, realName, or phid.");
-  }
-
-  return { username, realName, phid };
-}
-
-export async function phab_list_my_open_revisions(
-  statuses?: string[],
-  limit?: number
-): Promise<{
-  authorPHID: string;
-  statuses: string[];
-  revisions: ReturnType<typeof extractRevisionSummary>[];
-}> {
-  const whoami = await phab_whoami();
-  const effectiveStatuses = normalizeStatuses(statuses);
-  const effectiveLimit = normalizeLimit(limit);
-
-  const response = await callConduit("differential.revision.search", {
-    constraints: {
-      authorPHIDs: [whoami.phid],
-      statuses: effectiveStatuses
-    },
-    order: "newest",
-    limit: effectiveLimit
-  });
-
-  const revisions = extractSearchData(response).map(extractRevisionSummary);
-
-  return {
-    authorPHID: whoami.phid,
-    statuses: effectiveStatuses,
-    revisions
-  };
-}
-
-export async function phab_is_revision_accepted(
-  revision_id: string | number
-): Promise<{
-  revisionId: number;
-  found: boolean;
-  accepted: boolean;
-  status: ReturnType<typeof extractRevisionSummary>["status"] | null;
-}> {
-  const revisionId = parseRevisionId(revision_id);
-  const response = await callConduit("differential.revision.search", {
-    constraints: {
-      ids: [revisionId]
-    },
-    attachments: {
-      diffs: true
-    },
-    limit: 1
-  });
-
-  const data = extractSearchData(response);
-  const first = data[0];
-  if (!first) {
-    return {
-      revisionId,
-      found: false,
-      accepted: false,
-      status: null
-    };
-  }
-
-  const summary = extractRevisionSummary(first);
-  const accepted = summary.status.value === "accepted";
-
-  return {
-    revisionId,
-    found: true,
-    accepted,
-    status: summary.status
-  };
 }
 
 export async function phab_get_task(task_id: string): Promise<{
@@ -471,31 +383,6 @@ function buildRawDiffWarning(error: unknown): string {
     return `Could not fetch changed files from raw diff API: ${message}`;
   }
   return `Could not fetch changed files from raw diff: ${message}`;
-}
-
-function normalizeStatuses(statuses?: string[]): string[] {
-  if (!statuses || statuses.length === 0) {
-    return [...DEFAULT_REVISION_STATUSES];
-  }
-
-  const cleaned = statuses
-    .map((status) => status.trim())
-    .filter((status) => status.length > 0);
-
-  if (cleaned.length === 0) {
-    return [...DEFAULT_REVISION_STATUSES];
-  }
-  return cleaned;
-}
-
-function normalizeLimit(limit?: number): number {
-  if (limit === undefined || limit === null) {
-    return DEFAULT_LIMIT;
-  }
-  if (!Number.isInteger(limit) || limit <= 0) {
-    throw new InputValidationError("limit must be a positive integer.");
-  }
-  return Math.min(limit, MAX_LIMIT);
 }
 
 function normalizeMaxComments(max_comments?: number): number {

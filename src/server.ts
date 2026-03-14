@@ -11,10 +11,7 @@ import {
 import {
   phab_add_draft_inline_comments,
   phab_get_revision_context,
-  phab_get_task,
-  phab_is_revision_accepted,
-  phab_list_my_open_revisions,
-  phab_whoami
+  phab_get_task
 } from "./tools.js";
 import { getPromptByName, listPromptDefinitions } from "./prompts.js";
 
@@ -59,46 +56,6 @@ server.setRequestHandler(GetPromptRequestSchema, async (request) => {
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
     tools: [
-      {
-        name: "phab_whoami",
-        description: "Returns the current authenticated Phabricator user (username, realName, phid).",
-        inputSchema: {
-          type: "object",
-          additionalProperties: false
-        }
-      },
-      {
-        name: "phab_list_my_open_revisions",
-        description: "Lists current user's revisions with selected statuses.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            statuses: {
-              type: "array",
-              items: { type: "string" }
-            },
-            limit: {
-              type: "integer",
-              minimum: 1
-            }
-          },
-          additionalProperties: false
-        }
-      },
-      {
-        name: "phab_is_revision_accepted",
-        description: "Checks whether a Differential revision is accepted.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            revision_id: {
-              anyOf: [{ type: "string" }, { type: "integer" }]
-            }
-          },
-          required: ["revision_id"],
-          additionalProperties: false
-        }
-      },
       {
         name: "phab_get_task",
         description: "Fetches a task by ID (e.g. T123) from Maniphest.",
@@ -193,22 +150,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
 
   try {
     switch (name) {
-      case "phab_whoami":
-        return toToolResult(await phab_whoami());
-      case "phab_list_my_open_revisions":
-        return toToolResult(
-          await phab_list_my_open_revisions(
-            asOptionalStringArray(args.statuses),
-            asOptionalInteger(args.limit)
-          )
-        );
-      case "phab_is_revision_accepted": {
-        const revisionId = args.revision_id;
-        if (typeof revisionId !== "string" && typeof revisionId !== "number") {
-          throw new Error("phab_is_revision_accepted requires revision_id as string or integer.");
-        }
-        return toToolResult(await phab_is_revision_accepted(revisionId));
-      }
       case "phab_get_task": {
         const taskId = args.task_id;
         if (typeof taskId !== "string") {
