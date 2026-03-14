@@ -40,18 +40,6 @@ npm install
 npm run build
 ```
 
-Run the built server:
-
-```bash
-npm start
-```
-
-For local development:
-
-```bash
-npm run dev
-```
-
 ## Environment Variables
 
 - `PHAB_CONDUIT_URI`
