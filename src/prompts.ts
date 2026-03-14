@@ -24,12 +24,15 @@ export function listPromptDefinitions(): Array<{
 export function getPromptByName(
   name: string,
   _args: Record<string, string | undefined>
-): string {
+): { description: string; text: string } {
   if (name !== REVIEW_PROMPT_NAME) {
     throw new Error(`Unknown prompt: ${name}`);
   }
 
-  return buildRecursiveReviewPrompt();
+  return {
+    description: "Review a Differential using provided revision context and output only JSON findings.",
+    text: buildRecursiveReviewPrompt()
+  };
 }
 
 function buildRecursiveReviewPrompt(): string {
