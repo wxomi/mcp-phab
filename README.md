@@ -27,47 +27,85 @@ Important details:
 
 ## Installation
 
-Requirements:
+### Requirements
 
-1. Node.js 20 or newer
-2. access to your Phabricator instance
-3. a Conduit API token
+1. Node.js 18 or newer
+2. `npm`
+3. access to a Phabricator instance with the Conduit API enabled
+4. a Conduit API token for an account that can read the revisions and tasks you want to review
 
-Install and build:
+### 1. Clone the repository
+
+```bash
+git clone <your-repo-url>
+cd mcp-phab
+```
+
+### 2. Install dependencies
 
 ```bash
 npm install
+```
+
+### 3. Build the server
+
+```bash
 npm run build
 ```
 
-## Environment Variables
+This produces the MCP server entrypoint at `dist/server.js`.
 
-- `PHAB_CONDUIT_URI`
-  - default: `https://phab.instahyre.com/`
-- `PHAB_ARC_TIMEOUT_MS`
-  - default: `30000`
+### 4. Configure environment variables
+
+Set these before starting the server or before wiring it into your MCP client:
+
 - `PHAB_API_TOKEN`
   - required
+  - primary token variable used by the server
 - `CONDUIT_TOKEN`
-  - accepted as an alternative token env var
+  - optional alias for `PHAB_API_TOKEN`
 - `PHAB_CONDUIT_TOKEN`
-  - accepted as an alternative token env var
+  - optional alias for `PHAB_API_TOKEN`
+- `PHAB_CONDUIT_URI`
+  - optional
+  - default: `https://phab.instahyre.com/`
+  - should point to the base URL of your Phabricator instance
+- `PHAB_ARC_TIMEOUT_MS`
+  - optional
+  - default: `30000`
+  - request timeout in milliseconds
 
-## Example Usage
+Example:
 
-### Step 1: get review context
-
-Call `review-phab` with:
-
-```json
-{
-  "revision_id": "D35297"
-}
+```bash
+export PHAB_CONDUIT_URI="https://phabricator.example.com/"
+export PHAB_API_TOKEN="api-xxxxxxxxxxxxxxxx"
+export PHAB_ARC_TIMEOUT_MS="30000"
 ```
 
-## Codex MCP Config Example
+If you do not set `PHAB_CONDUIT_URI`, the server will try `https://phab.instahyre.com/`.
 
-Built server:
+### 5. Start the server manually (optional)
+
+You usually do not need this step when using the server through an MCP client. In the normal setup, the MCP client launches the stdio server process for you using its `mcpServers` configuration.
+
+Run the built server manually only if you want to verify that the binary starts correctly:
+
+```bash
+npm start
+```
+
+For local development without building on every change:
+
+```bash
+npm run dev
+```
+
+The server uses stdio transport, so manual `npm start` is optional and is not a required installation step.
+
+## Setup In An MCP Client
+
+### Codex / MCP config using the built server
 
 ```json
 {
@@ -84,19 +122,30 @@ Built server:
 }
 ```
 
-Run from source:
+## Setup Checklist
+
+Use this to verify the installation quickly:
+
+1. `npm install` completes successfully
+2. `npm run build` creates `dist/server.js`
+3. your MCP client is configured with `PHAB_API_TOKEN`
+4. `PHAB_CONDUIT_URI` points to the correct Phabricator base URL
+5. the MCP client can see the `review-phab` and `inline-comments-phab` tools
+
+## Example Usage
+
+### Step 1: get review context
+
+Call `review-phab` with:
 
 ```json
 {
-  "mcpServers": {
-    "phab-arc-mcp": {
-      "command": "npx",
-      "args": ["tsx", "/absolute/path/to/phab-arc-mcp/src/server.ts"],
-      "env": {
-        "PHAB_CONDUIT_URI": "https://phab.instahyre.com/",
-        "PHAB_API_TOKEN": "api-xxxxxxxxxxxxxxxx"
-      }
-    }
-  }
+  "revision_id": "D35297"
 }
 ```
+
+## Notes
+
+- This server talks to Phabricator over the Conduit HTTP API.
+- A valid API token is required for every tool call.
+- Comments created by `inline-comments-phab` are draft inlines and are not published automatically.
