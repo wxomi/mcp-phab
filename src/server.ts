@@ -10,8 +10,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import {
   phab_add_draft_inline_comments,
-  phab_get_revision_context,
-  phab_get_task
+  phab_get_revision_context
 } from "./tools.js";
 import { getPromptByName, listPromptDefinitions } from "./prompts.js";
 
@@ -57,41 +56,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
     tools: [
       {
-        name: "get-task-phab",
-        description: "Fetches a task by ID (e.g. T123) from Maniphest.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            task_id: {
-              type: "string"
-            }
-          },
-          required: ["task_id"],
-          additionalProperties: false
-        }
-      },
-      {
-        name: "get-revision-context-phab",
-        description:
-          "Fetches revision details and includes code changes by resolving diffPHID -> diffID -> getrawdiff, with optional referenced T-task resolution.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            revision_id: {
-              anyOf: [{ type: "string" }, { type: "integer" }]
-            },
-            resolve_tasks: {
-              type: "boolean"
-            },
-            include_changes: {
-              type: "boolean"
-            }
-          },
-          required: ["revision_id"],
-          additionalProperties: false
-        }
-      },
-      {
         name: "inline-comments-phab",
         description:
           "Creates draft inline comments on a Differential revision from review findings JSON (does not publish).",
@@ -126,13 +90,25 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: "review-phab",
         description:
-          "Returns the built-in recursive Differential review prompt text (fallback for clients that do not expose MCP prompts).",
+          "Fetches the exact review prompt and revision context needed to review a Differential without MCP sampling.",
         inputSchema: {
           type: "object",
           properties: {
             revision_id: {
-              type: "string"
-            },
+              anyOf: [{ type: "string" }, { type: "integer" }]
+            }
+          },
+          required: ["revision_id"],
+          additionalProperties: false
+        }
+      },
+      {
+        name: "review-phab-prompt",
+        description:
+          "Returns the built-in recursive Differential review prompt text (fallback for clients that do not expose MCP prompts).",
+        inputSchema: {
+          type: "object",
+          properties: {
             prompt_name: {
               type: "string"
             }
@@ -150,26 +126,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
 
   try {
     switch (name) {
-      case "get-task-phab": {
-        const taskId = args.task_id;
-        if (typeof taskId !== "string") {
-          throw new Error("get-task-phab requires task_id as string.");
-        }
-        return toToolResult(await phab_get_task(taskId));
-      }
-      case "get-revision-context-phab": {
-        const revisionId = args.revision_id;
-        if (typeof revisionId !== "string" && typeof revisionId !== "number") {
-          throw new Error("get-revision-context-phab requires revision_id as string or integer.");
-        }
-        return toToolResult(
-          await phab_get_revision_context(
-            revisionId,
-            asOptionalBoolean(args.resolve_tasks) ?? true,
-            asOptionalBoolean(args.include_changes) ?? true
-          )
-        );
-      }
       case "inline-comments-phab": {
         const revisionId = args.revision_id;
         if (typeof revisionId !== "string" && typeof revisionId !== "number") {
@@ -196,13 +152,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
         );
       }
       case "review-phab": {
+        const revisionId = args.revision_id;
+        if (typeof revisionId !== "string" && typeof revisionId !== "number") {
+          throw new Error("review-phab requires revision_id as string or integer.");
+        }
+
+        const reviewContext = await phab_get_revision_context(revisionId, true, true);
+        const reviewPrompt = getPromptByName("review-phab", {});
+
+        return toToolResult({
+          revision_id: typeof revisionId === "number" ? `D${revisionId}` : normalizeRevisionIdForTool(revisionId),
+          prompt: reviewPrompt,
+          revision_context: reviewContext,
+          next_step:
+            "Review using prompt.text and revision_context, then call inline-comments-phab with the generated review JSON."
+        });
+      }
+      case "review-phab-prompt": {
         const promptName = typeof args.prompt_name === "string" ? args.prompt_name : "review-phab";
-        const revisionId = typeof args.revision_id === "string" ? args.revision_id : "D<DIFFERENTIAL_ID>";
-        return toToolResult(
-          getPromptByName(promptName, {
-            revision_id: revisionId
-          })
-        );
+        return toToolResult(getPromptByName(promptName, {}));
       }
       default:
         throw new Error(`Unknown tool: ${name}`);
@@ -260,6 +228,17 @@ function asPromptArgs(value: unknown): Record<string, string | undefined> {
     result[key] = entry;
   }
   return result;
+}
+
+function normalizeRevisionIdForTool(value: string): string {
+  const trimmed = value.trim();
+  if (/^\d+$/.test(trimmed)) {
+    return `D${trimmed}`;
+  }
+  if (/^[dD]\d+$/.test(trimmed)) {
+    return `D${trimmed.slice(1)}`;
+  }
+  return trimmed;
 }
 
 function asOptionalStringArray(value: unknown): string[] | undefined {

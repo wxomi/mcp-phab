@@ -3,6 +3,7 @@ import { ConduitApiError } from "./errors.js";
 import { InputValidationError } from "./errors.js";
 import {
   extractChangedFilesFromRawDiff,
+  resolveLineRangeFromRawDiff,
   extractTaskIdsFromText,
   extractTextValue,
   extractRevisionSummary,
@@ -17,10 +18,11 @@ const DEFAULT_MAX_DRAFT_COMMENTS = 50;
 
 interface DraftReviewCodeLocation {
   absolute_file_path: string;
-  line_range: {
+  line_range?: {
     start: number;
     end?: number;
   };
+  line_text?: string;
 }
 
 interface DraftReviewFinding {
@@ -29,37 +31,64 @@ interface DraftReviewFinding {
   code_location: DraftReviewCodeLocation;
 }
 
-export async function phab_get_task(task_id: string): Promise<{
+interface TaskHierarchySummary {
   taskId: string;
   found: boolean;
   title?: string | null;
   description?: string | null;
   status?: unknown;
-}> {
-  const numericTaskId = parseTaskId(task_id);
-  const response = await callConduit("maniphest.search", {
-    constraints: {
-      ids: [numericTaskId]
-    },
-    limit: 1
-  });
+}
 
-  const data = extractSearchData(response);
-  const first = data[0];
-  if (!first) {
+interface ResolvedTaskResult {
+  taskId: string;
+  found: boolean;
+  title?: string | null;
+  description?: string | null;
+  status?: unknown;
+  mentionedTaskIds?: string[];
+  parentTaskId?: string | null;
+  parentTask?: TaskHierarchySummary | null;
+  parentTasks?: TaskHierarchySummary[];
+  hierarchy?: TaskHierarchySummary[];
+}
+
+export async function phab_get_task(task_id: string): Promise<ResolvedTaskResult> {
+  const numericTaskId = parseTaskId(task_id);
+  const task = await fetchTaskRecord({
+    ids: [numericTaskId]
+  });
+  if (!task) {
     return {
       taskId: `T${numericTaskId}`,
       found: false
     };
   }
 
-  const task = extractTaskSummary(first);
+  const parentTasks = task.phid ? await fetchParentTaskChain(task.phid) : [];
+  const parentTask = parentTasks[0] ?? null;
+  const mentionedTaskIds = extractTaskIdsFromText(task.title, task.description).filter(
+    (candidate) => candidate !== `T${numericTaskId}`
+  );
   return {
     taskId: `T${numericTaskId}`,
     found: true,
     title: task.title,
     description: task.description,
     status: task.status,
+    ...(mentionedTaskIds.length > 0 ? { mentionedTaskIds } : {}),
+    ...(parentTask?.taskId ? { parentTaskId: parentTask.taskId } : {}),
+    ...(parentTask ? { parentTask } : {}),
+    ...(parentTasks.length > 0 ? { parentTasks } : {}),
+    hierarchy: [
+      ...parentTasks.slice().reverse(),
+      {
+        taskId: `T${numericTaskId}`,
+        found: true,
+        title: task.title,
+        description: task.description,
+        status: task.status
+      }
+    ]
   };
 }
 
@@ -69,23 +98,13 @@ export async function phab_get_revision_context(
   include_changes = true
 ): Promise<{
   revisionId: string;
-  found: boolean;
+  directReferencedTaskIds: string[];
   title?: string | null;
   summary?: string | null;
-  uri?: string | null;
-  diffPHID?: string | null;
-  status?: ReturnType<typeof extractRevisionSummary>["status"] | null;
   referencedTaskIds: string[];
   changedFiles?: string[];
   rawDiff?: string;
-  changesWarning?: string;
-  referencedTasks?: Array<{
-    taskId: string;
-    found: boolean;
-    title?: string | null;
-    description?: string | null;
-    status?: unknown;
-  }>;
+  referencedTasks?: ResolvedTaskResult[];
 }> {
   const revisionId = parseRevisionId(revision_id);
   const response = await callConduit("differential.revision.search", {
@@ -103,7 +122,7 @@ export async function phab_get_revision_context(
   if (!first) {
     return {
       revisionId: `D${revisionId}`,
-      found: false,
+      directReferencedTaskIds: [],
       referencedTaskIds: []
     };
   }
@@ -118,7 +137,7 @@ export async function phab_get_revision_context(
   const initialDiffIDs = collectDiffIDs(fields, diffsAttachment);
   const resolvedDiffIDs = await fetchDiffIdsFromPhids(diffPHIDs);
   const diffIDs = mergeDiffIDs(initialDiffIDs, resolvedDiffIDs);
-  const referencedTaskIds = extractTaskIdsFromText(revision.title, summary);
+  const directReferencedTaskIds = extractTaskIdsFromText(revision.title, summary);
   let changedFiles: string[] | null = null;
   let rawDiff: string | null = null;
   let changesWarning: string | null = null;
@@ -128,37 +147,27 @@ export async function phab_get_revision_context(
     rawDiff = changes.rawDiff;
     changesWarning = changes.warning;
   }
-  const referencedTasks = resolve_tasks
-    ? await Promise.all(referencedTaskIds.map((taskId) => phab_get_task(taskId)))
+  const taskGraph = resolve_tasks
+    ? await resolveReferencedTasksRecursive(directReferencedTaskIds)
     : null;
+  const referencedTaskIds = taskGraph ? taskGraph.taskIds : directReferencedTaskIds;
+  const referencedTasks = taskGraph ? taskGraph.tasks : null;
 
   const result: {
     revisionId: string;
-    found: boolean;
+    directReferencedTaskIds: string[];
     title?: string | null;
     summary?: string | null;
-    uri?: string | null;
-    diffPHID?: string | null;
-    status?: ReturnType<typeof extractRevisionSummary>["status"] | null;
     referencedTaskIds: string[];
     changedFiles?: string[];
     rawDiff?: string;
     changesWarning?: string;
-    referencedTasks?: Array<{
-      taskId: string;
-      found: boolean;
-      title?: string | null;
-      description?: string | null;
-      status?: unknown;
-    }>;
+    referencedTasks?: ResolvedTaskResult[];
   } = {
     revisionId: `D${revisionId}`,
-    found: true,
     title: revision.title,
     summary,
-    uri: revision.uri,
-    diffPHID,
-    status: revision.status,
+    directReferencedTaskIds,
     referencedTaskIds
   };
 
@@ -179,6 +188,117 @@ export async function phab_get_revision_context(
   }
 
   return result;
+}
+
+async function resolveReferencedTasksRecursive(initialTaskIds: string[]): Promise<{
+  taskIds: string[];
+  tasks: ResolvedTaskResult[];
+}> {
+  const queue = [...initialTaskIds];
+  const enqueued = new Set<string>(initialTaskIds);
+  const resolvedOrder: string[] = [];
+  const resolvedTasks = new Map<string, ResolvedTaskResult>();
+
+  while (queue.length > 0) {
+    const currentTaskId = queue.shift();
+    if (!currentTaskId || resolvedTasks.has(currentTaskId)) {
+      continue;
+    }
+
+    const task = await phab_get_task(currentTaskId);
+    resolvedTasks.set(currentTaskId, task);
+    resolvedOrder.push(currentTaskId);
+
+    const relatedTaskIds = [
+      ...(task.mentionedTaskIds ?? []),
+      ...((task.parentTasks ?? []).map((parent) => parent.taskId))
+    ];
+
+    for (const relatedTaskId of relatedTaskIds) {
+      if (resolvedTasks.has(relatedTaskId) || enqueued.has(relatedTaskId)) {
+        continue;
+      }
+      enqueued.add(relatedTaskId);
+      queue.push(relatedTaskId);
+    }
+  }
+
+  return {
+    taskIds: resolvedOrder,
+    tasks: resolvedOrder
+      .map((taskId) => resolvedTasks.get(taskId))
+      .filter((task): task is ResolvedTaskResult => task !== undefined)
+  };
+}
+
+async function fetchTaskRecord(constraints: Record<string, unknown>): Promise<ReturnType<typeof extractTaskSummary> | null> {
+  const response = await callConduit("maniphest.search", {
+    constraints,
+    limit: 1
+  });
+
+  const data = extractSearchData(response);
+  const first = data[0];
+  if (!first) {
+    return null;
+  }
+
+  return extractTaskSummary(first);
+}
+
+async function fetchParentTaskChain(taskPhid: string): Promise<TaskHierarchySummary[]> {
+  const parentTasks: TaskHierarchySummary[] = [];
+  const seenPhids = new Set<string>([taskPhid]);
+  let currentPhid: string | null = taskPhid;
+
+  while (currentPhid) {
+    const parentPhid = await fetchParentTaskPhid(currentPhid);
+    if (!parentPhid || seenPhids.has(parentPhid)) {
+      break;
+    }
+
+    seenPhids.add(parentPhid);
+    const parentTask = await fetchTaskRecord({
+      phids: [parentPhid]
+    });
+    if (!parentTask || !parentTask.id) {
+      break;
+    }
+
+    parentTasks.push({
+      taskId: `T${parentTask.id}`,
+      found: true,
+      title: parentTask.title,
+      description: parentTask.description,
+      status: parentTask.status
+    });
+    currentPhid = parentPhid;
+  }
+
+  return parentTasks;
+}
+
+async function fetchParentTaskPhid(taskPhid: string): Promise<string | null> {
+  try {
+    const response = await callConduit("edge.search", {
+      sourcePHIDs: [taskPhid],
+      types: ["task.parent"],
+      limit: 1
+    });
+    const data = Array.isArray(response.data) ? response.data : [];
+    for (const item of data) {
+      if (!isJsonObject(item)) {
+        continue;
+      }
+      const destinationPhid = asString(item.destinationPHID);
+      if (destinationPhid) {
+        return destinationPhid;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 export async function phab_add_draft_inline_comments(
@@ -215,7 +335,8 @@ export async function phab_add_draft_inline_comments(
     `[phab_add_draft_inline_comments] start revision=D${revisionId} isNewFile=${isNewFile} includeTitle=${includeTitle} maxComments=${maxComments} findings=${findings.length}`
   );
   const diffId = await fetchLatestDiffIdForRevision(revisionId);
-  const changedFiles = await fetchChangedFilesFromSingleDiff(diffId);
+  const diffContext = await fetchSingleDiffContext(diffId);
+  const changedFiles = diffContext.changedFiles;
   console.error(
     `[phab_add_draft_inline_comments] resolved diffID=${diffId} changedFiles=${changedFiles.length}`
   );
@@ -235,16 +356,17 @@ export async function phab_add_draft_inline_comments(
   }> = [];
 
   for (const [index, finding] of findings.entries()) {
-    const lineStart = finding.code_location.line_range.start;
-    const lineEnd = finding.code_location.line_range.end ?? lineStart;
-    const lineLength = Math.max(1, lineEnd - lineStart + 1);
     const title = finding.title;
     const filePath = resolveInlineFilePath(
       finding.code_location.absolute_file_path,
       changedFiles
     );
+    const resolvedLocation = resolveInlineLocation(filePath, finding.code_location, diffContext.rawDiff);
+    const lineStart = resolvedLocation?.start ?? null;
+    const lineEnd = resolvedLocation?.end ?? null;
+    const lineLength = lineStart && lineEnd ? Math.max(1, lineEnd - lineStart + 1) : null;
     console.error(
-      `[phab_add_draft_inline_comments] finding#${index} sourcePath=${finding.code_location.absolute_file_path} mappedPath=${filePath ?? "null"} lineStart=${lineStart} lineEnd=${lineEnd} lineLength=${lineLength} title=${JSON.stringify(title)}`
+      `[phab_add_draft_inline_comments] finding#${index} sourcePath=${finding.code_location.absolute_file_path} mappedPath=${filePath ?? "null"} lineStart=${lineStart ?? "null"} lineEnd=${lineEnd ?? "null"} lineLength=${lineLength ?? "null"} title=${JSON.stringify(title)}`
     );
 
     if (!filePath) {
@@ -256,6 +378,17 @@ export async function phab_add_draft_inline_comments(
         index,
         ok: false,
         reason,
+        title
+      });
+      continue;
+    }
+
+    if (!lineStart || !lineLength) {
+      results.push({
+        index,
+        ok: false,
+        reason: buildMissingLineReason(finding.code_location, filePath),
+        filePath,
         title
       });
       continue;
@@ -478,10 +611,11 @@ function normalizeDraftReviewFindings(input: unknown): DraftReviewFinding[] {
     const codeLocation = isJsonObject(rawFinding.code_location) ? rawFinding.code_location : null;
     const absoluteFilePath = codeLocation ? asString(codeLocation.absolute_file_path) : null;
     const lineRange = codeLocation && isJsonObject(codeLocation.line_range) ? codeLocation.line_range : null;
+    const lineText = codeLocation ? asString(codeLocation.line_text) : null;
     const start = lineRange ? asPositiveInteger(lineRange.start) : null;
     const end = lineRange ? asPositiveInteger(lineRange.end) : null;
 
-    if (!title || !body || !absoluteFilePath || !start) {
+    if (!title || !body || !absoluteFilePath || (!start && !lineText)) {
       continue;
     }
 
@@ -490,10 +624,15 @@ function normalizeDraftReviewFindings(input: unknown): DraftReviewFinding[] {
       body,
       code_location: {
         absolute_file_path: absoluteFilePath,
-        line_range: {
-          start,
-          ...(end ? { end } : {})
-        }
+        ...(start
+          ? {
+              line_range: {
+                start,
+                ...(end ? { end } : {})
+              }
+            }
+          : {}),
+        ...(lineText ? { line_text: lineText } : {})
       }
     });
   }
@@ -582,15 +721,26 @@ function extractDiffIdsFromQueryDiffsResponse(response: Record<string, unknown>)
 }
 
 async function fetchChangedFilesFromSingleDiff(diffId: number): Promise<string[]> {
+  const context = await fetchSingleDiffContext(diffId);
+  return context.changedFiles;
+}
+
+async function fetchSingleDiffContext(diffId: number): Promise<{ changedFiles: string[]; rawDiff: string }> {
   const rawDiffResponse = await callConduit("differential.getrawdiff", {
     diffID: diffId
   });
   const rawDiff = extractRawDiffText(rawDiffResponse);
 
   if (!rawDiff) {
-    return [];
+    return {
+      changedFiles: [],
+      rawDiff: ""
+    };
   }
-  return extractChangedFilesFromRawDiff(rawDiff);
+  return {
+    changedFiles: extractChangedFilesFromRawDiff(rawDiff),
+    rawDiff
+  };
 }
 
 function resolveInlineFilePath(inputPath: string, changedFiles: string[]): string | null {
@@ -629,6 +779,41 @@ function resolveInlineFilePath(inputPath: string, changedFiles: string[]): strin
 
 function normalizeFilePath(path: string): string {
   return path.trim().replace(/\\/g, "/");
+}
+
+function resolveInlineLocation(
+  filePath: string | null,
+  codeLocation: DraftReviewCodeLocation,
+  rawDiff: string
+): { start: number; end: number } | null {
+  if (!filePath) {
+    return null;
+  }
+
+  const hintStart = codeLocation.line_range?.start;
+  const lineText = codeLocation.line_text?.trim();
+  if (lineText) {
+    const resolved = resolveLineRangeFromRawDiff(rawDiff, filePath, lineText, hintStart);
+    if (resolved) {
+      return resolved;
+    }
+  }
+
+  if (hintStart) {
+    return {
+      start: hintStart,
+      end: codeLocation.line_range?.end ?? hintStart
+    };
+  }
+
+  return null;
+}
+
+function buildMissingLineReason(codeLocation: DraftReviewCodeLocation, filePath: string): string {
+  if (codeLocation.line_text?.trim()) {
+    return `could not resolve line_text against raw diff for ${filePath}`;
+  }
+  return "finding is missing a resolvable line location";
 }
 
 function buildInlineCommentContent(finding: DraftReviewFinding, includeTitle: boolean): string {

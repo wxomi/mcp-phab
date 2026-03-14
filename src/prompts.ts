@@ -15,52 +15,31 @@ export function listPromptDefinitions(): Array<{
     {
       name: REVIEW_PROMPT_NAME,
       description:
-        "Structured Differential review prompt that recursively resolves referenced tasks/revisions and returns JSON findings.",
-      arguments: [
-        {
-          name: "revision_id",
-          description: "Differential ID to review (e.g. D1234 or 1234).",
-          required: true
-        }
-      ]
+        "Structured Differential review prompt that uses provided revision context and returns JSON findings.",
+      arguments: []
     }
   ];
 }
 
 export function getPromptByName(
   name: string,
-  args: Record<string, string | undefined>
+  _args: Record<string, string | undefined>
 ): { description: string; text: string } {
   if (name !== REVIEW_PROMPT_NAME) {
     throw new Error(`Unknown prompt: ${name}`);
   }
 
-  const revisionId = normalizeRevisionId(args.revision_id);
-
   return {
     description:
-      "Review a Differential by building recursive task/revision context and output only JSON findings.",
-    text: buildRecursiveReviewPrompt(revisionId)
+      "Review a Differential using provided revision context and output only JSON findings.",
+    text: buildRecursiveReviewPrompt()
   };
 }
 
-function normalizeRevisionId(raw: string | undefined): string {
-  const value = (raw ?? "").trim();
-  if (!value) {
-    return "D<DIFFERENTIAL_ID>";
-  }
-  if (/^\d+$/.test(value)) {
-    return `D${value}`;
-  }
-  if (/^[dD]\d+$/.test(value)) {
-    return `D${value.slice(1)}`;
-  }
-  return value;
-}
-
-function buildRecursiveReviewPrompt(revisionId: string): string {
+function buildRecursiveReviewPrompt(): string {
   return [
     "You are acting as a reviewer for a proposed code change made by another engineer.",
+    "The revision context, referenced tasks, task hierarchy, changed files, and raw diff are already provided outside this prompt.",
     "",
     "Below are some default guidelines for determining whether the original author would appreciate the issue being flagged.",
     "",
@@ -99,6 +78,8 @@ function buildRecursiveReviewPrompt(revisionId: string): string {
     "- Do NOT introduce or remove outer indentation levels unless that is the actual fix.",
     "",
     "The comments will be presented in the code review as inline comments. You should avoid providing unnecessary location details in the comment body. Always keep the line range as short as possible for interpreting the issue. Avoid ranges longer than 5 to 10 lines; instead, choose the most suitable subrange that pinpoints the problem.",
+    "Do not count line numbers manually from displayed diff text. Derive locations from the raw diff programmatically.",
+    "In code_location, include the exact changed line text in `line_text`. The inline tool will match this snippet against raw diff to compute the final new-file line number.",
     "",
     "At the beginning of the finding title, tag the bug with priority level. For example \"[P1] Un-padding slices along wrong tensor dimensions\".",
     "[P0] Drop everything to fix. Blocking release, operations, or major usage.",
@@ -120,6 +101,7 @@ function buildRecursiveReviewPrompt(revisionId: string): string {
     '      "priority": <int 0-3, optional>,',
     '      "code_location": {',
     '        "absolute_file_path": "<file path>",',
+    '        "line_text": "<exact changed line text, or multiple exact lines joined with \\n>",',
     '        "line_range": {"start": <int>, "end": <int>}',
     "      }",
     "    }",
@@ -131,38 +113,28 @@ function buildRecursiveReviewPrompt(revisionId: string): string {
     "",
     "Do not wrap the JSON in markdown fences or extra prose.",
     "",
-    "I will provide a Differential ID. For that revision, do the following in order:",
-    "1. Fetch revision details using get-revision-context-phab with include_changes=true and resolve_tasks=true.",
-    "2. Read the revision summary and collect all referenced task IDs and revision IDs.",
-    "3. Recursively resolve references:",
-    "   - For each referenced task ID, fetch it using get-task-phab.",
-    "   - For each referenced revision ID, fetch it using get-revision-context-phab (include_changes=true and resolve_tasks=true).",
-    "   - If a referenced task mentions other tasks or revisions, fetch those too.",
-    "   - If a referenced revision mentions other tasks or revisions, fetch those too.",
-    "   - Continue until no new references are found.",
-    "4. Build context from this full reference graph, then review the code changes in the target Differential.",
+    "Use the provided revision context directly.",
+    "The provided context already includes:",
+    "- tasks directly referenced by the revision",
+    "- recursively discovered tasks mentioned inside those tasks",
+    "- parent task hierarchy for those tasks",
+    "- changed files and raw diff for the revision",
+    "Review the change using that provided context and the raw diff.",
     "",
     "Review requirements:",
     "- Treat the Differential raw diff as the source of truth for what changed.",
+    "- Use the task hierarchy in the provided context to understand parent/child relationships and broader intent, but do not let that override concrete bugs in the patch.",
     "- Validate that every newly introduced symbol/constant/method used in changed lines exists and is valid in the codebase.",
     "- Flag runtime/syntax/name errors before higher-level logic issues.",
     "- Report only actionable bugs introduced by the change.",
     "- If the raw diff and local workspace file content differ, explicitly call out the mismatch in the review.",
     "",
-    "After you finish the review:",
-    "- Construct a review JSON object that matches the OUTPUT SCHEMA above (this will be used as tool input).",
-    "- Then call inline-comments-phab with:",
-    "  - revision_id = the same Differential ID",
-    "  - review_json = the review JSON object you constructed",
-    "  - include_title=true (so each inline includes the finding title)",
-    "  - is_new_file=true (unless you have strong evidence it should be false)",
+    "After you finish the review, construct a review JSON object that matches the OUTPUT SCHEMA above.",
     "",
     "Note: IN THIS REPO WE ARE NOT USING GIT, INSTEAD WE ARE USING MERCURIAL.",
     "",
-    `Review Differential: ${revisionId}`,
-    "",
     "Output format:",
-    "- Do NOT output the review JSON.",
-    "- Return only the result JSON from the inline-comments-phab tool call."
+    "- Return only the review JSON object.",
+    "- Do not add prose before or after the JSON."
   ].join("\n");
 }

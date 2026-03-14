@@ -226,6 +226,150 @@ export function extractChangedFilesFromRawDiff(rawDiff: string): string[] {
   return files;
 }
 
+export interface RawDiffNewFileLine {
+  lineNumber: number;
+  content: string;
+  kind: "context" | "add";
+}
+
+export function extractNewFileLinesFromRawDiff(rawDiff: string, filePath: string): RawDiffNewFileLine[] {
+  const targetPath = normalizeDiffFilePath(filePath);
+  const lines = rawDiff.split(/\r?\n/);
+  const results: RawDiffNewFileLine[] = [];
+  let inTargetFile = false;
+  let inHunk = false;
+  let oldLine = 0;
+  let newLine = 0;
+
+  for (const line of lines) {
+    const diffMatch = /^diff --git a\/(.+?) b\/(.+)$/.exec(line);
+    if (diffMatch) {
+      const currentPath = normalizeDiffFilePath(diffMatch[2] ?? diffMatch[1] ?? "");
+      inTargetFile = currentPath === targetPath;
+      inHunk = false;
+      oldLine = 0;
+      newLine = 0;
+      continue;
+    }
+
+    if (!inTargetFile) {
+      continue;
+    }
+
+    const hunkMatch = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+    if (hunkMatch) {
+      oldLine = Number.parseInt(hunkMatch[1] ?? "0", 10);
+      newLine = Number.parseInt(hunkMatch[2] ?? "0", 10);
+      inHunk = true;
+      continue;
+    }
+
+    if (!inHunk || line === "\\ No newline at end of file") {
+      continue;
+    }
+
+    if (line.startsWith("--- ") || line.startsWith("+++ ")) {
+      continue;
+    }
+
+    const prefix = line[0];
+    const content = line.slice(1);
+
+    if (prefix === " ") {
+      results.push({
+        lineNumber: newLine,
+        content,
+        kind: "context"
+      });
+      oldLine += 1;
+      newLine += 1;
+      continue;
+    }
+
+    if (prefix === "+") {
+      results.push({
+        lineNumber: newLine,
+        content,
+        kind: "add"
+      });
+      newLine += 1;
+      continue;
+    }
+
+    if (prefix === "-") {
+      oldLine += 1;
+    }
+  }
+
+  return results;
+}
+
+export function resolveLineRangeFromRawDiff(
+  rawDiff: string,
+  filePath: string,
+  snippetText: string,
+  hintStart?: number
+): { start: number; end: number } | null {
+  const snippetLines = snippetText.replace(/\r/g, "").split("\n");
+  if (snippetLines.length === 0 || snippetLines.every((line) => line.length === 0)) {
+    return null;
+  }
+
+  const fileLines = extractNewFileLinesFromRawDiff(rawDiff, filePath);
+  if (fileLines.length === 0) {
+    return null;
+  }
+
+  const matches: Array<{ start: number; end: number }> = [];
+  for (let index = 0; index <= fileLines.length - snippetLines.length; index += 1) {
+    let matched = true;
+    for (let offset = 0; offset < snippetLines.length; offset += 1) {
+      const fileLine = fileLines[index + offset];
+      const snippetLine = snippetLines[offset];
+      if (!fileLine || fileLine.content !== snippetLine) {
+        matched = false;
+        break;
+      }
+    }
+    if (!matched) {
+      continue;
+    }
+
+    const startLine = fileLines[index]?.lineNumber;
+    const endLine = fileLines[index + snippetLines.length - 1]?.lineNumber;
+    if (!startLine || !endLine) {
+      continue;
+    }
+    matches.push({
+      start: startLine,
+      end: endLine
+    });
+  }
+
+  if (matches.length === 0) {
+    return null;
+  }
+
+  if (matches.length === 1 || hintStart === undefined) {
+    return matches[0] ?? null;
+  }
+
+  const sorted = matches.sort((left, right) => {
+    const leftDistance = Math.abs(left.start - hintStart);
+    const rightDistance = Math.abs(right.start - hintStart);
+    if (leftDistance !== rightDistance) {
+      return leftDistance - rightDistance;
+    }
+    return left.start - right.start;
+  });
+
+  return sorted[0] ?? null;
+}
+
+function normalizeDiffFilePath(path: string): string {
+  return path.trim().replace(/\\/g, "/").replace(/^\/+/, "");
+}
+
 function toNullableNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }

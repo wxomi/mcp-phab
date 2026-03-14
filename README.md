@@ -30,74 +30,13 @@ npm run dev
 
 ## MCP Tools
 
-### 1) `get-task-phab(task_id: "T123")`
-Calls `maniphest.search` with:
-- `constraints.ids=[123]`
-
-Example result:
-
-```json
-{
-  "taskId": "T123",
-  "found": true,
-  "title": "Migrate CI workers",
-  "description": "Move worker pools to new autoscaling group and verify queue latency.",
-  "status": {
-    "value": "open",
-    "name": "Open"
-  }
-}
-```
-
-### 2) `get-revision-context-phab(revision_id: "D1234", resolve_tasks?: boolean, include_changes?: boolean)`
-Calls `differential.revision.search` with `constraints.ids=[1234]` and returns:
-- revision title, summary, uri, status, and `diffPHID`
-- `referencedTaskIds` parsed from title/summary text (e.g. `T44043`)
-- `changedFiles` and `rawDiff` (full patch text) from raw diff parsing (default `true`)
-  - resolves `diffPHID -> diffID` via `differential.diff.search`, then parses `differential.getrawdiff` output
-- optionally `referencedTasks` resolved via `maniphest.search` (default `true`)
-
-Example result:
-
-```json
-{
-  "revisionId": "D1234",
-  "found": true,
-  "title": "Fix retries for applicant sync (T44043)",
-  "summary": "This change handles API flakiness and closes T44043.",
-  "uri": "https://phab.instahyre.com/D1234",
-  "diffPHID": "PHID-DIFF-xxxxxxxxxxxxxxxxxxxx",
-  "status": {
-    "value": "needs-review",
-    "name": "Needs Review"
-  },
-  "changedFiles": [
-    "src/worker/deleteS3Files.ts",
-    "src/services/s3.ts"
-  ],
-  "rawDiff": "diff --git a/src/worker/deleteS3Files.ts b/src/worker/deleteS3Files.ts\n...",
-  "referencedTaskIds": ["T44043"],
-  "referencedTasks": [
-    {
-      "taskId": "T44043",
-      "found": true,
-      "title": "Applicant sync intermittently fails",
-      "description": "Fix retries and error handling in sync worker.",
-      "status": {
-        "value": "open",
-        "name": "Open"
-      }
-    }
-  ]
-}
-```
-
-### 3) `inline-comments-phab(revision_id: "D1234", review_json?: object|string, findings?: object[], is_new_file?: boolean, include_title?: boolean, max_comments?: number)`
+### 1) `inline-comments-phab(revision_id: "D1234", review_json?: object|string, findings?: object[], is_new_file?: boolean, include_title?: boolean, max_comments?: number)`
 Creates draft inline comments from code-review findings JSON and does **not** publish them.
 
 - Resolves latest `diffID` for the revision via `differential.querydiffs`
 - Maps each `code_location.absolute_file_path` to a changed file path in that diff
-- Uses `code_location.line_range.start` as inline line number
+- Resolves the inline line number from raw diff using `code_location.line_text` when provided
+- Falls back to `code_location.line_range.start` only when no snippet is available
 - Creates comments with `differential.createinline`
 
 Expected finding shape:
@@ -110,6 +49,7 @@ Expected finding shape:
       "body": "Why this is a bug...",
       "code_location": {
         "absolute_file_path": "/abs/path/to/file.py",
+        "line_text": "exact changed line text here",
         "line_range": { "start": 42, "end": 42 }
       }
     }
@@ -118,10 +58,29 @@ Expected finding shape:
 ```
 
 Notes:
+- Prefer providing `line_text`; it is the reliable source of truth for inline placement.
 - Draft inlines are only visible in draft/add-comment flow until published.
 - To publish drafted inlines, call `differential.createcomment` with `attach_inlines=true`.
 
-### 4) `review-phab(revision_id?: string, prompt_name?: string)`
+### 2) `review-phab(revision_id: "D1234")`
+Fetches the exact reusable review prompt and full revision context needed to review a Differential without MCP sampling.
+
+Returns:
+- `prompt` (same prompt body returned by the `review-phab` MCP prompt)
+- `revision_context`:
+  - revision metadata
+  - `directReferencedTaskIds`
+  - recursively expanded `referencedTaskIds`
+  - `referencedTasks` with `mentionedTaskIds`, `parentTasks`, and `hierarchy`
+  - `changedFiles`
+  - `rawDiff`
+- `next_step` (instruction to call `inline-comments-phab` after generating review JSON)
+
+Notes:
+- This does not require MCP sampling support.
+- Use `inline-comments-phab` after producing review JSON from the returned prompt and context.
+
+### 3) `review-phab-prompt(prompt_name?: string)`
 Fallback tool for MCP clients that do not expose prompt templates in UI.
 
 Returns:
@@ -130,18 +89,15 @@ Returns:
 
 Defaults:
 - `prompt_name = "review-phab"`
-- `revision_id = "D<DIFFERENTIAL_ID>"`
 
 ## MCP Prompts
 
-### 1) `review-phab(revision_id: string)`
+### 1) `review-phab()`
 Returns a reusable review prompt template for Differential reviews that:
 - enforces JSON-only findings output with severity/priorities
-- instructs recursive context expansion across referenced tasks and revisions
+- assumes revision context and recursive task hierarchy are already provided
 - prioritizes runtime/syntax/name errors first
 - includes repository note that reviews should assume Mercurial workflow (not Git)
-
-`revision_id` accepts values like `D1234` or `1234`.
 
 ## Codex MCP Config Example
 
