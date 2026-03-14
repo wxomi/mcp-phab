@@ -1,4 +1,4 @@
-const REVIEW_PROMPT_NAME = "phab_recursive_review_json";
+const REVIEW_PROMPT_NAME = "review-phab";
 
 export interface PromptArgumentSpec {
   name: string;
@@ -60,7 +60,7 @@ function normalizeRevisionId(raw: string | undefined): string {
 
 function buildRecursiveReviewPrompt(revisionId: string): string {
   return [
-    "u are acting as a reviewer for a proposed code change made by another engineer.",
+    "You are acting as a reviewer for a proposed code change made by another engineer.",
     "",
     "Below are some default guidelines for determining whether the original author would appreciate the issue being flagged.",
     "",
@@ -132,7 +132,7 @@ function buildRecursiveReviewPrompt(revisionId: string): string {
     "Do not wrap the JSON in markdown fences or extra prose.",
     "",
     "I will provide a Differential ID. For that revision, do the following in order:",
-    "1. Fetch revision details using phab_get_revision_context with include_changes=true and resolve_tasks=true.",
+    "1. Fetch revision details using get-revision-context-phab with include_changes=true and resolve_tasks=true.",
     "2. Read the revision summary and collect all referenced task IDs and revision IDs.",
     "3. Recursively resolve references:",
     "   - If a referenced task mentions other tasks or revisions, fetch those too.",

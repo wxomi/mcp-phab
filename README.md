@@ -1,20 +1,20 @@
 # phab-arc-mcp
 
-`phab-arc-mcp` is an MCP stdio server that talks to Phabricator through local Arcanist:
+`phab-arc-mcp` is an MCP stdio server that talks to Phabricator via Conduit using either:
+- direct API token calls (`PHAB_API_TOKEN`), or
+- local Arcanist (`arc call-conduit`) fallback when token is not set.
 
 ```bash
 echo '{}' | arc call-conduit --conduit-uri https://phab.instahyre.com/ -- user.whoami
 ```
 
-It does not use raw HTTP. All Conduit calls are executed via `arc call-conduit` with JSON payloads on stdin.
-
 ## Prerequisites
 
 1. Node.js 20+ (Node 22 recommended)
-2. `arc` installed and on `PATH`
-3. Arcanist authenticated against your Phabricator instance, for example:
-   - `arc install-certificate https://phab.instahyre.com/`
-4. Access to `https://phab.instahyre.com/`
+2. Access to `https://phab.instahyre.com/`
+3. One of:
+   - `PHAB_API_TOKEN` configured (recommended), or
+   - `arc` installed/authenticated on `PATH` (fallback mode)
 
 ## Install and Run
 
@@ -34,67 +34,11 @@ npm run dev
 
 - `PHAB_CONDUIT_URI` (default: `https://phab.instahyre.com/`)
 - `PHAB_ARC_TIMEOUT_MS` (default: `30000`)
+- `PHAB_API_TOKEN` (optional; when set, direct API mode is used instead of local `arc`)
 
 ## MCP Tools
 
-### 1) `phab_whoami()`
-Calls `user.whoami` with `{}` and returns:
-
-```json
-{
-  "username": "jdoe",
-  "realName": "Jane Doe",
-  "phid": "PHID-USER-xxxxxxxxxxxxxxxxxxxx"
-}
-```
-
-### 2) `phab_list_my_open_revisions(statuses?: string[], limit?: number)`
-Calls `differential.revision.search` with:
-- `constraints.authorPHIDs=[whoami.phid]`
-- `constraints.statuses` default `["needs-review","needs-revision","accepted"]`
-- `order="newest"`
-- `limit` default `100`
-
-Example result:
-
-```json
-{
-  "authorPHID": "PHID-USER-xxxxxxxxxxxxxxxxxxxx",
-  "statuses": ["needs-review", "needs-revision", "accepted"],
-  "revisions": [
-    {
-      "id": 1234,
-      "title": "Add retry logic to conduit wrapper",
-      "uri": "https://phab.instahyre.com/D1234",
-      "status": {
-        "value": "needs-review",
-        "name": "Needs Review"
-      },
-      "dateModified": 1761234567
-    }
-  ]
-}
-```
-
-### 3) `phab_is_revision_accepted(revision_id: string | number)`
-Calls `differential.revision.search` with `constraints.ids=[id]`.
-Accepted is computed by `status.value === "accepted"`.
-
-Example result:
-
-```json
-{
-  "revisionId": 1234,
-  "found": true,
-  "accepted": false,
-  "status": {
-    "value": "needs-review",
-    "name": "Needs Review"
-  }
-}
-```
-
-### 4) `phab_get_task(task_id: "T123")`
+### 1) `get-task-phab(task_id: "T123")`
 Calls `maniphest.search` with:
 - `constraints.ids=[123]`
 
@@ -113,7 +57,7 @@ Example result:
 }
 ```
 
-### 5) `phab_get_revision_context(revision_id: "D1234", resolve_tasks?: boolean, include_changes?: boolean)`
+### 2) `get-revision-context-phab(revision_id: "D1234", resolve_tasks?: boolean, include_changes?: boolean)`
 Calls `differential.revision.search` with `constraints.ids=[1234]` and returns:
 - revision title, summary, uri, status, and `diffPHID`
 - `referencedTaskIds` parsed from title/summary text (e.g. `T44043`)
@@ -156,7 +100,7 @@ Example result:
 }
 ```
 
-### 6) `phab_add_draft_inline_comments(revision_id: "D1234", review_json?: object|string, findings?: object[], is_new_file?: boolean, include_title?: boolean, max_comments?: number)`
+### 3) `inline-comments-phab(revision_id: "D1234", review_json?: object|string, findings?: object[], is_new_file?: boolean, include_title?: boolean, max_comments?: number)`
 Creates draft inline comments from code-review findings JSON and does **not** publish them.
 
 - Resolves latest `diffID` for the revision via `differential.querydiffs`
@@ -185,7 +129,7 @@ Notes:
 - Draft inlines are only visible in draft/add-comment flow until published.
 - To publish drafted inlines, call `differential.createcomment` with `attach_inlines=true`.
 
-### 7) `phab_get_review_prompt(revision_id?: string, prompt_name?: string)`
+### 4) `review-phab(revision_id?: string, prompt_name?: string)`
 Fallback tool for MCP clients that do not expose prompt templates in UI.
 
 Returns:
@@ -193,12 +137,12 @@ Returns:
 - `text` (full review prompt template)
 
 Defaults:
-- `prompt_name = "phab_recursive_review_json"`
+- `prompt_name = "review-phab"`
 - `revision_id = "D<DIFFERENTIAL_ID>"`
 
 ## MCP Prompts
 
-### 1) `phab_recursive_review_json(revision_id: string)`
+### 1) `review-phab(revision_id: string)`
 Returns a reusable review prompt template for Differential reviews that:
 - enforces JSON-only findings output with severity/priorities
 - instructs recursive context expansion across referenced tasks and revisions
@@ -241,4 +185,4 @@ Or run from source with `tsx`:
 
 ## Security Note
 
-This server relies on your local `arc` authentication/session and permissions. It does not manage tokens directly; any action runs as your local authenticated Phabricator identity.
+This server can authenticate using either a Conduit API token (`PHAB_API_TOKEN`) or local `arc` session. Keep API tokens in environment variables and do not hardcode them.

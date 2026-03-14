@@ -57,7 +57,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
     tools: [
       {
-        name: "phab_get_task",
+        name: "get-task-phab",
         description: "Fetches a task by ID (e.g. T123) from Maniphest.",
         inputSchema: {
           type: "object",
@@ -71,7 +71,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         }
       },
       {
-        name: "phab_get_revision_context",
+        name: "get-revision-context-phab",
         description:
           "Fetches revision details and includes code changes by resolving diffPHID -> diffID -> getrawdiff, with optional referenced T-task resolution.",
         inputSchema: {
@@ -92,7 +92,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         }
       },
       {
-        name: "phab_add_draft_inline_comments",
+        name: "inline-comments-phab",
         description:
           "Creates draft inline comments on a Differential revision from review findings JSON (does not publish).",
         inputSchema: {
@@ -124,7 +124,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         }
       },
       {
-        name: "phab_get_review_prompt",
+        name: "review-phab",
         description:
           "Returns the built-in recursive Differential review prompt text (fallback for clients that do not expose MCP prompts).",
         inputSchema: {
@@ -150,17 +150,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
 
   try {
     switch (name) {
-      case "phab_get_task": {
+      case "get-task-phab": {
         const taskId = args.task_id;
         if (typeof taskId !== "string") {
-          throw new Error("phab_get_task requires task_id as string.");
+          throw new Error("get-task-phab requires task_id as string.");
         }
         return toToolResult(await phab_get_task(taskId));
       }
-      case "phab_get_revision_context": {
+      case "get-revision-context-phab": {
         const revisionId = args.revision_id;
         if (typeof revisionId !== "string" && typeof revisionId !== "number") {
-          throw new Error("phab_get_revision_context requires revision_id as string or integer.");
+          throw new Error("get-revision-context-phab requires revision_id as string or integer.");
         }
         return toToolResult(
           await phab_get_revision_context(
@@ -170,17 +170,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
           )
         );
       }
-      case "phab_add_draft_inline_comments": {
+      case "inline-comments-phab": {
         const revisionId = args.revision_id;
         if (typeof revisionId !== "string" && typeof revisionId !== "number") {
-          throw new Error("phab_add_draft_inline_comments requires revision_id as string or integer.");
+          throw new Error("inline-comments-phab requires revision_id as string or integer.");
         }
 
         const reviewJson = args.review_json;
         const findings = args.findings;
         const reviewInput = reviewJson ?? findings;
         if (reviewInput === undefined) {
-          throw new Error("phab_add_draft_inline_comments requires review_json or findings.");
+          throw new Error("inline-comments-phab requires review_json or findings.");
         }
 
         const isNewFile = asOptionalBoolean(args.is_new_file);
@@ -195,8 +195,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
           })
         );
       }
-      case "phab_get_review_prompt": {
-        const promptName = typeof args.prompt_name === "string" ? args.prompt_name : "phab_recursive_review_json";
+      case "review-phab": {
+        const promptName = typeof args.prompt_name === "string" ? args.prompt_name : "review-phab";
         const revisionId = typeof args.revision_id === "string" ? args.revision_id : "D<DIFFERENTIAL_ID>";
         return toToolResult(
           getPromptByName(promptName, {
