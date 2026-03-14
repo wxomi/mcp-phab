@@ -135,6 +135,8 @@ function buildRecursiveReviewPrompt(revisionId: string): string {
     "1. Fetch revision details using get-revision-context-phab with include_changes=true and resolve_tasks=true.",
     "2. Read the revision summary and collect all referenced task IDs and revision IDs.",
     "3. Recursively resolve references:",
+    "   - For each referenced task ID, fetch it using get-task-phab.",
+    "   - For each referenced revision ID, fetch it using get-revision-context-phab (include_changes=true and resolve_tasks=true).",
     "   - If a referenced task mentions other tasks or revisions, fetch those too.",
     "   - If a referenced revision mentions other tasks or revisions, fetch those too.",
     "   - Continue until no new references are found.",
@@ -147,11 +149,20 @@ function buildRecursiveReviewPrompt(revisionId: string): string {
     "- Report only actionable bugs introduced by the change.",
     "- If the raw diff and local workspace file content differ, explicitly call out the mismatch in the review.",
     "",
+    "After you finish the review:",
+    "- Construct a review JSON object that matches the OUTPUT SCHEMA above (this will be used as tool input).",
+    "- Then call inline-comments-phab with:",
+    "  - revision_id = the same Differential ID",
+    "  - review_json = the review JSON object you constructed",
+    "  - include_title=true (so each inline includes the finding title)",
+    "  - is_new_file=true (unless you have strong evidence it should be false)",
+    "",
     "Note: IN THIS REPO WE ARE NOT USING GIT, INSTEAD WE ARE USING MERCURIAL.",
     "",
     `Review Differential: ${revisionId}`,
     "",
     "Output format:",
-    "- Return findings in the required JSON review schema only."
+    "- Do NOT output the review JSON.",
+    "- Return only the result JSON from the inline-comments-phab tool call."
   ].join("\n");
 }

@@ -1,33 +1,47 @@
 #!/usr/bin/env python3
 import json
+import os
 import re
-import subprocess
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 from typing import Any
 
-CONDUIT_URI = "https://phab.instahyre.com/"
+CONDUIT_URI = os.environ.get("PHAB_CONDUIT_URI", "https://phab.instahyre.com/")
+API_TOKEN = os.environ.get("PHAB_API_TOKEN") or os.environ.get("CONDUIT_TOKEN") or os.environ.get("PHAB_CONDUIT_TOKEN")
 
 
 def call_conduit(method: str, payload: dict[str, Any]) -> dict[str, Any]:
-    cmd = [
-        "arc",
-        "call-conduit",
-        "--conduit-uri",
-        CONDUIT_URI,
-        "--",
-        method,
-    ]
-    proc = subprocess.run(
-        cmd,
-        input=json.dumps(payload).encode("utf-8"),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
+    if not API_TOKEN:
+        raise RuntimeError("PHAB_API_TOKEN (or CONDUIT_TOKEN / PHAB_CONDUIT_TOKEN) is required")
+    endpoint = CONDUIT_URI.rstrip("/") + f"/api/{method}"
+    params = dict(payload)
+    params["__conduit__"] = {"token": API_TOKEN}
+    body = urllib.parse.urlencode(
+        {
+            "api.token": API_TOKEN,
+            "params": json.dumps(params),
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        endpoint,
+        data=body,
+        headers={"content-type": "application/x-www-form-urlencoded"},
+        method="POST",
     )
-    if proc.returncode != 0:
-        raise RuntimeError(f"{method} failed ({proc.returncode}): {proc.stderr.decode('utf-8', 'replace').strip()}")
+
     try:
-        raw = json.loads(proc.stdout.decode("utf-8"))
+        with urllib.request.urlopen(request, timeout=30) as response:
+            raw_text = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace").strip()
+        raise RuntimeError(f"{method} failed ({exc.code}): {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"{method} request failed: {exc}") from exc
+
+    try:
+        raw = json.loads(raw_text)
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"{method} returned invalid JSON: {exc}") from exc
 

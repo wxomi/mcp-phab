@@ -248,10 +248,14 @@ export async function phab_add_draft_inline_comments(
     );
 
     if (!filePath) {
+      const reason =
+        changedFiles.length === 0
+          ? `could not resolve changed files for diff ${diffId}; refusing to send a non-revision-relative file path`
+          : "could not map absolute_file_path to a changed file in this diff";
       results.push({
         index,
         ok: false,
-        reason: "could not map absolute_file_path to a changed file in this diff",
+        reason,
         title
       });
       continue;
@@ -321,14 +325,33 @@ async function fetchChangedFiles(
 ): Promise<{ files: string[]; rawDiff: string | null; warning: string | null }> {
   const warnings: string[] = [];
   const resolvedDiffIDs = mergeDiffIDs(await fetchDiffIdsFromPhids(diffPHIDs), diffIDs);
+  let files: string[] = [];
+  let rawDiff: string | null = null;
+
+  if (diffPHIDs.length > 0) {
+    try {
+      files = await fetchChangedFilesFromChangesets(diffPHIDs);
+      if (files.length === 0) {
+        warnings.push("changeset search returned 0 files");
+      }
+    } catch (error) {
+      warnings.push(`changeset lookup failed: ${buildChangesetWarning(error)}`);
+    }
+  } else {
+    warnings.push("revision search did not include diffPHID");
+  }
 
   if (resolvedDiffIDs.length > 0) {
     try {
       const fromRawDiff = await fetchRawDiffChanges(resolvedDiffIDs);
-      if (fromRawDiff.files.length > 0 || fromRawDiff.rawDiff.length > 0) {
-        return { files: fromRawDiff.files, rawDiff: fromRawDiff.rawDiff, warning: null };
+      if (fromRawDiff.files.length > 0 && files.length === 0) {
+        files = fromRawDiff.files;
       }
-      warnings.push(`rawdiff parsing returned 0 files for diffs [${resolvedDiffIDs.join(", ")}]`);
+      if (fromRawDiff.rawDiff.length > 0) {
+        rawDiff = fromRawDiff.rawDiff;
+      } else if (fromRawDiff.files.length === 0) {
+        warnings.push(`rawdiff parsing returned 0 files for diffs [${resolvedDiffIDs.join(", ")}]`);
+      }
     } catch (error) {
       warnings.push(`rawdiff lookup failed: ${buildRawDiffWarning(error)}`);
     }
@@ -336,14 +359,10 @@ async function fetchChangedFiles(
     warnings.push("could not resolve numeric diff IDs from revision diffPHID");
   }
 
-  if (diffPHIDs.length === 0) {
-    warnings.push("revision search did not include diffPHID");
-  }
-
   return {
-    files: [],
-    rawDiff: null,
-    warning: warnings.join("; ")
+    files,
+    rawDiff,
+    warning: files.length > 0 || rawDiff ? null : warnings.length > 0 ? warnings.join("; ") : null
   };
 }
 
@@ -357,7 +376,7 @@ async function fetchRawDiffChanges(diffIDs: number[]): Promise<{ files: string[]
       diffID
     });
 
-    const rawDiff = asString(response.response) ?? asString(response.rawDiff) ?? asString(response.diff) ?? "";
+    const rawDiff = extractRawDiffText(response);
     if (!rawDiff) {
       continue;
     }
@@ -375,6 +394,53 @@ async function fetchRawDiffChanges(diffIDs: number[]): Promise<{ files: string[]
     files,
     rawDiff: rawDiffChunks.join("\n")
   };
+}
+
+async function fetchChangedFilesFromChangesets(diffPHIDs: string[]): Promise<string[]> {
+  const files: string[] = [];
+  const seen = new Set<string>();
+
+  for (const diffPHID of diffPHIDs) {
+    let after: string | null = null;
+
+    while (true) {
+      const response = await callConduit("differential.changeset.search", {
+        constraints: {
+          diffPHIDs: [diffPHID]
+        },
+        limit: 100,
+        ...(after ? { after } : {})
+      });
+
+      const data = extractSearchData(response);
+      for (const item of data) {
+        const fields = isJsonObject(item.fields) ? item.fields : {};
+        const path = asString(fields.path) ?? asString(item.path);
+        if (!path || seen.has(path)) {
+          continue;
+        }
+        seen.add(path);
+        files.push(path);
+      }
+
+      const cursor = isJsonObject(response.cursor) ? response.cursor : {};
+      const nextAfter = asString(cursor.after);
+      if (!nextAfter || data.length === 0 || nextAfter === after) {
+        break;
+      }
+      after = nextAfter;
+    }
+  }
+
+  return files;
+}
+
+function buildChangesetWarning(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (error instanceof ConduitApiError) {
+    return `Could not fetch changed files from changeset API: ${message}`;
+  }
+  return `Could not fetch changed files from changesets: ${message}`;
 }
 
 function buildRawDiffWarning(error: unknown): string {
@@ -519,8 +585,7 @@ async function fetchChangedFilesFromSingleDiff(diffId: number): Promise<string[]
   const rawDiffResponse = await callConduit("differential.getrawdiff", {
     diffID: diffId
   });
-  const rawDiff =
-    asString(rawDiffResponse.response) ?? asString(rawDiffResponse.rawDiff) ?? asString(rawDiffResponse.diff) ?? "";
+  const rawDiff = extractRawDiffText(rawDiffResponse);
 
   if (!rawDiff) {
     return [];
@@ -559,7 +624,7 @@ function resolveInlineFilePath(inputPath: string, changedFiles: string[]): strin
     return sorted[0] ?? null;
   }
 
-  return changedFiles.length === 0 ? withoutLeadingSlash : null;
+  return null;
 }
 
 function normalizeFilePath(path: string): string {
@@ -575,6 +640,16 @@ function buildInlineCommentContent(finding: DraftReviewFinding, includeTitle: bo
 
 function asString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
+}
+
+function extractRawDiffText(response: Record<string, unknown>): string {
+  return (
+    asString(response.response) ??
+    asString(response.result) ??
+    asString(response.rawDiff) ??
+    asString(response.diff) ??
+    ""
+  );
 }
 
 function asNumberArray(value: unknown): number[] {

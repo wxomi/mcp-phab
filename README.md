@@ -1,20 +1,12 @@
 # phab-arc-mcp
 
-`phab-arc-mcp` is an MCP stdio server that talks to Phabricator via Conduit using either:
-- direct API token calls (`PHAB_API_TOKEN`), or
-- local Arcanist (`arc call-conduit`) fallback when token is not set.
-
-```bash
-echo '{}' | arc call-conduit --conduit-uri https://phab.instahyre.com/ -- user.whoami
-```
+`phab-arc-mcp` is an MCP stdio server that talks to Phabricator via Conduit over the HTTP API using a Conduit token.
 
 ## Prerequisites
 
 1. Node.js 20+ (Node 22 recommended)
 2. Access to `https://phab.instahyre.com/`
-3. One of:
-   - `PHAB_API_TOKEN` configured (recommended), or
-   - `arc` installed/authenticated on `PATH` (fallback mode)
+3. `PHAB_API_TOKEN` configured
 
 ## Install and Run
 
@@ -34,7 +26,7 @@ npm run dev
 
 - `PHAB_CONDUIT_URI` (default: `https://phab.instahyre.com/`)
 - `PHAB_ARC_TIMEOUT_MS` (default: `30000`)
-- `PHAB_API_TOKEN` (optional; when set, direct API mode is used instead of local `arc`)
+- `PHAB_API_TOKEN` (required; `CONDUIT_TOKEN` and `PHAB_CONDUIT_TOKEN` are also accepted)
 
 ## MCP Tools
 
@@ -185,4 +177,4 @@ Or run from source with `tsx`:
 
 ## Security Note
 
-This server can authenticate using either a Conduit API token (`PHAB_API_TOKEN`) or local `arc` session. Keep API tokens in environment variables and do not hardcode them.
+This server authenticates with a Conduit API token (`PHAB_API_TOKEN`, `CONDUIT_TOKEN`, or `PHAB_CONDUIT_TOKEN`). Keep tokens in environment variables and do not hardcode them.

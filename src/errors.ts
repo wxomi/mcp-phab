@@ -1,21 +1,14 @@
-export class ArcNotFoundError extends Error {
+export class ConduitTimeoutError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = "ArcNotFoundError";
+    this.name = "ConduitTimeoutError";
   }
 }
 
-export class ArcTimeoutError extends Error {
+export class ConduitRequestError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = "ArcTimeoutError";
-  }
-}
-
-export class ArcExecutionError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ArcExecutionError";
+    this.name = "ConduitRequestError";
   }
 }
 
