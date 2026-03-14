@@ -80,16 +80,6 @@ Notes:
 - This does not require MCP sampling support.
 - Use `inline-comments-phab` after producing review JSON from the returned prompt and context.
 
-### 3) `review-phab-prompt(prompt_name?: string)`
-Fallback tool for MCP clients that do not expose prompt templates in UI.
-
-Returns:
-- `description`
-- `text` (full review prompt template)
-
-Defaults:
-- `prompt_name = "review-phab"`
-
 ## MCP Prompts
 
 ### 1) `review-phab()`

@@ -101,20 +101,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ["revision_id"],
           additionalProperties: false
         }
-      },
-      {
-        name: "review-phab-prompt",
-        description:
-          "Returns the built-in recursive Differential review prompt text (fallback for clients that do not expose MCP prompts).",
-        inputSchema: {
-          type: "object",
-          properties: {
-            prompt_name: {
-              type: "string"
-            }
-          },
-          additionalProperties: false
-        }
       }
     ]
   };
@@ -167,10 +153,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
           next_step:
             "Review using prompt.text and revision_context, then call inline-comments-phab with the generated review JSON."
         });
-      }
-      case "review-phab-prompt": {
-        const promptName = typeof args.prompt_name === "string" ? args.prompt_name : "review-phab";
-        return toToolResult(getPromptByName(promptName, {}));
       }
       default:
         throw new Error(`Unknown tool: ${name}`);
