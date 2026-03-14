@@ -2,12 +2,6 @@
 
 `phab-arc-mcp` is a small MCP stdio server for reviewing Phabricator revisions.
 
-It does two things:
-
-1. It prepares review context for a Differential.
-2. It can create draft inline comments on that Differential through Conduit.
-
-
 ## What This Server Exposes
 
 The public MCP surface is intentionally small:
@@ -15,23 +9,17 @@ The public MCP surface is intentionally small:
 - `review-phab`
 - `inline-comments-phab`
 
-There is also an MCP prompt named `review-phab`, but it is used internally by the server as well and can be fetched by clients that support prompts.
+## What `review-phab` Does
 
-## How The Review Flow Works
+`review-phab` is the tool you call when you want an AI reviewer to review a Differential properly.
 
-The current flow is:
+You give it a revision ID like `D35297`. It fetches the revision title, summary, changed files, raw diff, and the linked Maniphest task context, then packages all of that together with the review prompt the model should use.
 
-1. Call `review-phab` with a revision ID like `D35297`.
-2. The server returns:
-   - the reusable review prompt
-   - the fetched revision context
-   - the raw diff
-   - recursively resolved task context
-3. The model reviews the revision using that returned data and produces review JSON.
-4. Call `inline-comments-phab` with that review JSON.
-5. The server creates draft inline comments on the revision.
+From a user point of view, this means you do not have to manually open the revision, copy the diff, inspect related tasks, and explain the background before asking for a review. The tool gives the model the code changes and the surrounding context in one shot.
 
-This design is deliberate.
+That makes reviews more useful because the model can judge the change against the actual task being solved, not just the raw code diff. It can use the overall repository context to reason about likely bugs, regressions, and edge cases, and it can also check whether the revision actually does what the linked task says it should do. In practice.
+
+After that, `inline-comments-phab` can take the review findings and create draft inline comments directly on the Differential.
 
 Important details:
 
