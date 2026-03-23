@@ -14,6 +14,73 @@ import {
 } from "./tools.js";
 import { getPromptByName, listPromptDefinitions } from "./prompts.js";
 
+const INLINE_COMMENTS_OUTPUT_SCHEMA = {
+  type: "object",
+  properties: {
+    revisionId: { type: "string" },
+    diffId: { type: "integer" },
+    isNewFile: { type: "boolean" },
+    changedFiles: {
+      type: "array",
+      items: { type: "string" }
+    },
+    createdCount: { type: "integer" },
+    skippedCount: { type: "integer" },
+    results: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          index: { type: "integer" },
+          ok: { type: "boolean" },
+          reason: { type: "string" },
+          filePath: { type: "string" },
+          lineNumber: { type: "integer" },
+          lineLength: { type: "integer" },
+          title: { type: "string" }
+        }
+      }
+    }
+  },
+  required: ["revisionId", "diffId", "isNewFile", "changedFiles", "createdCount", "skippedCount", "results"]
+} as const;
+
+const REVIEW_PHAB_OUTPUT_SCHEMA = {
+  type: "object",
+  properties: {
+    revision_id: { type: "string" },
+    review_prompt: { type: "string" },
+    revision_context: { type: "object" },
+    review_summary: {
+      type: "object",
+      properties: {
+        changed_file_count: { type: "integer" },
+        referenced_task_count: { type: "integer" },
+        direct_referenced_task_count: { type: "integer" },
+        has_raw_diff: { type: "boolean" },
+        has_changes_warning: { type: "boolean" }
+      },
+      required: [
+        "changed_file_count",
+        "referenced_task_count",
+        "direct_referenced_task_count",
+        "has_raw_diff",
+        "has_changes_warning"
+      ]
+    },
+    next_action: {
+      type: "object",
+      properties: {
+        type: { type: "string" },
+        tool_name: { type: "string" },
+        required_argument: { type: "string" }
+      },
+      required: ["type", "tool_name", "required_argument"]
+    }
+  },
+  required: ["revision_id", "review_prompt", "revision_context", "review_summary", "next_action"]
+} as const;
+
 const server = new Server(
   {
     name: "phab-arc-mcp",
@@ -85,7 +152,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           },
           required: ["revision_id"],
           additionalProperties: false
-        }
+        },
+        outputSchema: INLINE_COMMENTS_OUTPUT_SCHEMA
       },
       {
         name: "review-phab",
@@ -100,7 +168,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           },
           required: ["revision_id"],
           additionalProperties: false
-        }
+        },
+        outputSchema: REVIEW_PHAB_OUTPUT_SCHEMA
       }
     ]
   };
@@ -145,14 +214,30 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
 
         const reviewContext = await phab_get_revision_context(revisionId, true, true);
         const reviewPrompt = getPromptByName("review-phab", {});
-
-        return toToolResult({
-          revision_id: typeof revisionId === "number" ? `D${revisionId}` : normalizeRevisionIdForTool(revisionId),
-          prompt: reviewPrompt,
+        const normalizedRevisionId =
+          typeof revisionId === "number" ? `D${revisionId}` : normalizeRevisionIdForTool(revisionId);
+        const result = {
+          revision_id: normalizedRevisionId,
+          review_prompt: reviewPrompt.text,
           revision_context: reviewContext,
-          next_step:
-            "Review using prompt.text and revision_context, then call inline-comments-phab with the generated review JSON."
-        });
+          review_summary: {
+            changed_file_count: reviewContext.changedFiles?.length ?? 0,
+            referenced_task_count: reviewContext.referencedTaskIds.length,
+            direct_referenced_task_count: reviewContext.directReferencedTaskIds.length,
+            has_raw_diff: Boolean(reviewContext.rawDiff),
+            has_changes_warning: Boolean(reviewContext.changesWarning)
+          },
+          next_action: {
+            type: "generate_review_json_then_call_tool",
+            tool_name: "inline-comments-phab",
+            required_argument: "review_json"
+          }
+        };
+
+        return toToolResultWithText(
+          result,
+          buildReviewPhabText(result)
+        );
       }
       default:
         throw new Error(`Unknown tool: ${name}`);
@@ -172,14 +257,57 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
 });
 
 function toToolResult(value: unknown): CallToolResult {
+  return toToolResultWithText(value);
+}
+
+function toToolResultWithText(value: unknown, text?: string): CallToolResult {
+  const contentText = text ?? JSON.stringify(value, null, 2);
   return {
     content: [
       {
         type: "text",
-        text: JSON.stringify(value, null, 2)
+        text: contentText
       }
-    ]
+    ],
+    ...(isStructuredContent(value) ? { structuredContent: value } : {})
   };
+}
+
+function buildReviewPhabText(result: {
+  revision_id: string;
+  review_summary: {
+    changed_file_count: number;
+    referenced_task_count: number;
+    direct_referenced_task_count: number;
+    has_raw_diff: boolean;
+    has_changes_warning: boolean;
+  };
+  next_action: {
+    tool_name: string;
+    required_argument: string;
+  };
+}): string {
+  const parts = [
+    `Fetched review package for ${result.revision_id}.`,
+    `Changed files: ${result.review_summary.changed_file_count}.`,
+    `Direct tasks: ${result.review_summary.direct_referenced_task_count}.`,
+    `Resolved tasks: ${result.review_summary.referenced_task_count}.`,
+    `Raw diff available: ${result.review_summary.has_raw_diff ? "yes" : "no"}.`
+  ];
+
+  if (result.review_summary.has_changes_warning) {
+    parts.push("Change-context warnings are present in revision_context.changesWarning.");
+  }
+
+  parts.push(
+    `Use structuredContent.review_prompt with structuredContent.revision_context, then call ${result.next_action.tool_name} with ${result.next_action.required_argument}.`
+  );
+
+  return parts.join(" ");
+}
+
+function isStructuredContent(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function asObject(value: unknown): Record<string, unknown> {

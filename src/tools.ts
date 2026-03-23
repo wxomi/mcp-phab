@@ -104,6 +104,7 @@ export async function phab_get_revision_context(
   referencedTaskIds: string[];
   changedFiles?: string[];
   rawDiff?: string;
+  changesWarning?: string;
   referencedTasks?: ResolvedTaskResult[];
 }> {
   const revisionId = parseRevisionId(revision_id);
