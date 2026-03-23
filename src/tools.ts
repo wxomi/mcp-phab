@@ -52,6 +52,20 @@ interface ResolvedTaskResult {
   hierarchy?: TaskHierarchySummary[];
 }
 
+function toCompactTaskHierarchySummary(task: {
+  taskId: string;
+  found: boolean;
+  title?: string | null;
+  status?: unknown;
+}): TaskHierarchySummary {
+  return {
+    taskId: task.taskId,
+    found: task.found,
+    ...(task.title !== undefined ? { title: task.title } : {}),
+    ...(task.status !== undefined ? { status: task.status } : {})
+  };
+}
+
 export async function phab_get_task(task_id: string): Promise<ResolvedTaskResult> {
   const numericTaskId = parseTaskId(task_id);
   const task = await fetchTaskRecord({
@@ -66,8 +80,9 @@ export async function phab_get_task(task_id: string): Promise<ResolvedTaskResult
 
   const parentTasks = task.phid ? await fetchParentTaskChain(task.phid) : [];
   const parentTask = parentTasks[0] ?? null;
+  const parentTaskIds = new Set(parentTasks.map((entry) => entry.taskId));
   const mentionedTaskIds = extractTaskIdsFromText(task.title, task.description).filter(
-    (candidate) => candidate !== `T${numericTaskId}`
+    (candidate) => candidate !== `T${numericTaskId}` && !parentTaskIds.has(candidate)
   );
   return {
     taskId: `T${numericTaskId}`,
@@ -80,14 +95,13 @@ export async function phab_get_task(task_id: string): Promise<ResolvedTaskResult
     ...(parentTask ? { parentTask } : {}),
     ...(parentTasks.length > 0 ? { parentTasks } : {}),
     hierarchy: [
-      ...parentTasks.slice().reverse(),
-      {
+      ...parentTasks.slice().reverse().map(toCompactTaskHierarchySummary),
+      toCompactTaskHierarchySummary({
         taskId: `T${numericTaskId}`,
         found: true,
         title: task.title,
-        description: task.description,
         status: task.status
-      }
+      })
     ]
   };
 }
@@ -134,16 +148,13 @@ export async function phab_get_revision_context(
   const diffsAttachment = isJsonObject(attachments.diffs) ? attachments.diffs : {};
   const summary = extractTextValue(fields.summary);
   const diffPHID = asString(fields.diffPHID);
-  const diffPHIDs = collectDiffPHIDs(diffPHID, diffsAttachment);
-  const initialDiffIDs = collectDiffIDs(fields, diffsAttachment);
-  const resolvedDiffIDs = await fetchDiffIdsFromPhids(diffPHIDs);
-  const diffIDs = mergeDiffIDs(initialDiffIDs, resolvedDiffIDs);
+  const reviewDiff = await resolveReviewDiffContext(revisionId, diffPHID, fields, diffsAttachment);
   const directReferencedTaskIds = extractTaskIdsFromText(revision.title, summary);
   let changedFiles: string[] | null = null;
   let rawDiff: string | null = null;
   let changesWarning: string | null = null;
   if (include_changes) {
-    const changes = await fetchChangedFiles(diffPHIDs, diffIDs);
+    const changes = await fetchChangedFiles(reviewDiff.diffPHID, reviewDiff.diffID);
     changedFiles = changes.files;
     rawDiff = changes.rawDiff;
     changesWarning = changes.warning;
@@ -189,6 +200,46 @@ export async function phab_get_revision_context(
   }
 
   return result;
+}
+
+async function resolveReviewDiffContext(
+  revisionId: number,
+  activeDiffPHID: string | null,
+  fields: Record<string, unknown>,
+  diffsAttachment: Record<string, unknown>
+): Promise<{ diffPHID: string | null; diffID: number | null }> {
+  if (activeDiffPHID) {
+    const resolved = await fetchDiffIdFromPhid(activeDiffPHID);
+    if (resolved) {
+      return {
+        diffPHID: activeDiffPHID,
+        diffID: resolved
+      };
+    }
+  }
+
+  const attachmentDiffIDs = collectDiffIDs(fields, diffsAttachment);
+  if (attachmentDiffIDs.length > 0) {
+    const latestAttachmentDiffID = attachmentDiffIDs.sort((a, b) => a - b).at(-1) ?? null;
+    if (latestAttachmentDiffID) {
+      return {
+        diffPHID: null,
+        diffID: latestAttachmentDiffID
+      };
+    }
+  }
+
+  try {
+    return {
+      diffPHID: null,
+      diffID: await fetchLatestDiffIdForRevision(revisionId)
+    };
+  } catch {
+    return {
+      diffPHID: activeDiffPHID,
+      diffID: null
+    };
+  }
 }
 
 async function resolveReferencedTasksRecursive(initialTaskIds: string[]): Promise<{
@@ -270,7 +321,6 @@ async function fetchParentTaskChain(taskPhid: string): Promise<TaskHierarchySumm
       taskId: `T${parentTask.id}`,
       found: true,
       title: parentTask.title,
-      description: parentTask.description,
       status: parentTask.status
     });
     currentPhid = parentPhid;
@@ -454,17 +504,16 @@ export async function phab_add_draft_inline_comments(
 }
 
 async function fetchChangedFiles(
-  diffPHIDs: string[],
-  diffIDs: number[]
+  diffPHID: string | null,
+  diffID: number | null
 ): Promise<{ files: string[]; rawDiff: string | null; warning: string | null }> {
   const warnings: string[] = [];
-  const resolvedDiffIDs = mergeDiffIDs(await fetchDiffIdsFromPhids(diffPHIDs), diffIDs);
   let files: string[] = [];
   let rawDiff: string | null = null;
 
-  if (diffPHIDs.length > 0) {
+  if (diffPHID) {
     try {
-      files = await fetchChangedFilesFromChangesets(diffPHIDs);
+      files = await fetchChangedFilesFromChangesets([diffPHID]);
       if (files.length === 0) {
         warnings.push("changeset search returned 0 files");
       }
@@ -475,22 +524,22 @@ async function fetchChangedFiles(
     warnings.push("revision search did not include diffPHID");
   }
 
-  if (resolvedDiffIDs.length > 0) {
+  if (diffID) {
     try {
-      const fromRawDiff = await fetchRawDiffChanges(resolvedDiffIDs);
+      const fromRawDiff = await fetchRawDiffChanges([diffID]);
       if (fromRawDiff.files.length > 0 && files.length === 0) {
         files = fromRawDiff.files;
       }
       if (fromRawDiff.rawDiff.length > 0) {
         rawDiff = fromRawDiff.rawDiff;
       } else if (fromRawDiff.files.length === 0) {
-        warnings.push(`rawdiff parsing returned 0 files for diffs [${resolvedDiffIDs.join(", ")}]`);
+        warnings.push(`rawdiff parsing returned 0 files for diff ${diffID}`);
       }
     } catch (error) {
       warnings.push(`rawdiff lookup failed: ${buildRawDiffWarning(error)}`);
     }
   } else {
-    warnings.push("could not resolve numeric diff IDs from revision diffPHID");
+    warnings.push("could not resolve numeric diff ID for the active revision diff");
   }
 
   return {
@@ -528,6 +577,11 @@ async function fetchRawDiffChanges(diffIDs: number[]): Promise<{ files: string[]
     files,
     rawDiff: rawDiffChunks.join("\n")
   };
+}
+
+async function fetchDiffIdFromPhid(diffPHID: string): Promise<number | null> {
+  const ids = await fetchDiffIdsFromPhids([diffPHID]);
+  return ids[0] ?? null;
 }
 
 async function fetchChangedFilesFromChangesets(diffPHIDs: string[]): Promise<string[]> {
