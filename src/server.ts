@@ -4,6 +4,8 @@ import { pathToFileURL } from "node:url";
 import {
   CallToolRequestSchema,
   GetPromptRequestSchema,
+  ListResourcesRequestSchema,
+  ListResourceTemplatesRequestSchema,
   ListPromptsRequestSchema,
   ListToolsRequestSchema,
   type CallToolResult
@@ -88,11 +90,24 @@ const server = new Server(
   },
   {
     capabilities: {
+      resources: {},
       tools: {},
       prompts: {}
     }
   }
 );
+
+server.setRequestHandler(ListResourcesRequestSchema, async () => {
+  return {
+    resources: []
+  };
+});
+
+server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => {
+  return {
+    resourceTemplates: []
+  };
+});
 
 server.setRequestHandler(ListPromptsRequestSchema, async () => {
   return {
@@ -275,6 +290,8 @@ function toToolResultWithText(value: unknown, text?: string): CallToolResult {
 
 function buildReviewPhabText(result: {
   revision_id: string;
+  review_prompt: string;
+  revision_context: Record<string, unknown>;
   review_summary: {
     changed_file_count: number;
     referenced_task_count: number;
@@ -287,7 +304,8 @@ function buildReviewPhabText(result: {
     required_argument: string;
   };
 }): string {
-  const parts = [
+  const revisionContextJson = JSON.stringify(result.revision_context, null, 2);
+  const summaryLines = [
     `Fetched review package for ${result.revision_id}.`,
     `Changed files: ${result.review_summary.changed_file_count}.`,
     `Direct tasks: ${result.review_summary.direct_referenced_task_count}.`,
@@ -296,14 +314,19 @@ function buildReviewPhabText(result: {
   ];
 
   if (result.review_summary.has_changes_warning) {
-    parts.push("Change-context warnings are present in revision_context.changesWarning.");
+    summaryLines.push("Change-context warnings are present in revision_context.changesWarning.");
   }
 
-  parts.push(
-    `Use structuredContent.review_prompt with structuredContent.revision_context, then call ${result.next_action.tool_name} with ${result.next_action.required_argument}.`
-  );
-
-  return parts.join(" ");
+  return [
+    summaryLines.join(" "),
+    `Use structuredContent.review_prompt with structuredContent.revision_context, then call ${result.next_action.tool_name} with ${result.next_action.required_argument}.`,
+    "If your MCP client does not expose structuredContent to the model, use the fallback payload below. All required review data is included in plain text here. Do not claim the prompt or revision context is missing.",
+    "REVIEW_PROMPT:",
+    result.review_prompt,
+    "REVISION_CONTEXT_JSON:",
+    revisionContextJson,
+    `After producing review JSON, call ${result.next_action.tool_name} with ${result.next_action.required_argument}.`
+  ].join("\n\n");
 }
 
 function isStructuredContent(value: unknown): value is Record<string, unknown> {
