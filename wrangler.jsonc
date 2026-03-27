@@ -1,5 +1,5 @@
 {
   "name": "phab-arc-mcp",
-  "main": "dist/index.js",
+  "main": "dist/server.js",
   "compatibility_date": "2026-03-27"
 }
